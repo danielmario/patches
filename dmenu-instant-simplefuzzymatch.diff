@@ -1,0 +1,133 @@
+Based on dmenu-instant by Michael Stummvoll and dmenu-fuzzymatch by Jan Christoph Ebersbach.
+
+diff --git a/config.def.h b/config.def.h
+index 4e5e3e7..22ef78b 100644
+--- a/config.def.h
++++ b/config.def.h
+@@ -4,6 +4,8 @@
+ /* Default settings; can be overrided by command line. */
+ 
+ static Bool topbar = True;                  /* -b  option; if False, dmenu appears at bottom */
++static Bool instant = False;                /* -n  option; if True, dmenu ends immediately   */
++                                            /*             on a distinct match               */
+ /* -fn option overrides fonts[0]; default X11 font or font set */
+ static const char *fonts[] = {
+ 	"monospace:size=10"
+diff --git a/dmenu.c b/dmenu.c
+index f0bc176..5715c0c 100644
+--- a/dmenu.c
++++ b/dmenu.c
+@@ -31,6 +31,7 @@ typedef struct Item Item;
+ struct Item {
+ 	char *text;
+ 	Item *left, *right;
++	int distance;
+ 	Bool out;
+ };
+ 
+@@ -93,6 +94,8 @@ main(int argc, char *argv[]) {
+ 			fstrncmp = strncasecmp;
+ 			fstrstr = cistrstr;
+ 		}
++		else if(!strcmp(argv[i], "-n"))   /* instant match */
++			instant = !instant;
+ 		else if(i+1 == argc)
+ 			usage();
+ 		/* these options take one argument */
+@@ -460,6 +463,7 @@ keypress(XKeyEvent *ev) {
+ 	drawmenu();
+ }
+ 
++#if 0
+ void
+ match(void) {
+ 	static char **tokv = NULL;
+@@ -511,8 +515,85 @@ match(void) {
+ 		matchend = substrend;
+ 	}
+ 	curr = sel = matches;
++	if(instant && matches && matches==matchend && !lsubstr) {
++		puts(matches->text);
++		cleanup();
++		exit(0);
++	}
+ 	calcoffsets();
+ }
++#else // fuzzy match
++int
++compare_distance(const void *a, const void *b) {
++	int d;
++	Item const *da = *(Item **) a;
++	Item const *db = *(Item **) b;
++	if(!db)
++		return 1;
++	if(!da)
++		return -1;
++	d = da->distance - db->distance;
++	return (d != 0) ? d : strcmp(da->text, db->text);
++}
++
++void
++match(void) {
++	/* bang - we have so much memory */
++	Item *item;
++	Item **fuzzymatches = NULL;
++	int number_of_matches = 0, i, j;
++	float d;
++	int text_len = strlen(text), itext_len;
++
++	matches = matchend = NULL;
++
++	/* walk through all items */
++	for(item = items; item && item->text; item++) {
++		if(text_len) {
++			itext_len = strlen(item->text);
++			d = 0;
++			/* walk through item text */
++			for(i = 0, j = 0; i < itext_len && j < text_len; i++) {
++				if (item->text[i] == text[j]) {
++					j++;
++				} else {
++					d++;
++				}
++			}
++			d += text_len - j;
++			/* build list of matches */
++			if(j > 0) {
++				item->distance = d;
++				appenditem(item, &matches, &matchend);
++				number_of_matches++;
++			}
++		}
++		else
++			appenditem(item, &matches, &matchend);
++	}
++
++	if(number_of_matches) {
++		/* initialize array with matches */
++		if(!(fuzzymatches = realloc(fuzzymatches, number_of_matches * sizeof(Item*))))
++			fprintf(stderr, "cannot realloc %u bytes:", number_of_matches * sizeof(Item*));
++		for(i = 0, item = matches; item && i < number_of_matches; i++, item = item->right) {
++			fuzzymatches[i] = item;
++		}
++		/* sort matches according to distance */
++		qsort(fuzzymatches, number_of_matches, sizeof(Item*), compare_distance);
++		/* rebuild list of matches */
++		matches = matchend = NULL;
++		for(i = 0, item = fuzzymatches[i];  i < number_of_matches && item && \
++				item->text; i++, item = fuzzymatches[i]) {
++			appenditem(item, &matches, &matchend);
++		}
++		free(fuzzymatches);
++	}
++	curr = sel = matches;
++	calcoffsets();
++}
++#endif
++
+ 
+ size_t
+ nextrune(int inc) {
+diff --git a/dmenu_path b/dmenu_path
+old mode 100644
+new mode 100755
