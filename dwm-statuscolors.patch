@@ -1,0 +1,228 @@
+From: Daniel Lima <danielm@tinyhub.tk>
+Date: Wed, 14 Oct 2015 20:29:59 -0300
+Subject: [PATCH] Fix: stext length, unicode and variable numcolors.
+
+---
+ config.def.h | 11 +++++++++++
+ drw.c        | 21 +++++++++++++--------
+ drw.h        |  6 ++++--
+ dwm.c        | 37 ++++++++++++++++++++-----------------
+ 4 files changed, 48 insertions(+), 27 deletions(-)
+
+diff --git a/config.def.h b/config.def.h
+index eaae8f3..1115ae7 100644
+--- a/config.def.h
++++ b/config.def.h
+@@ -18,6 +18,17 @@ static const unsigned int snap      = 32;       /* snap pixel */
+ static const Bool showbar           = True;     /* False means no bar */
+ static const Bool topbar            = True;     /* False means bottom bar */
+ 
++static const char *colors[][3] = {
++  // border   foreground  background
++  { "#444444", "#bbbbbb", "#222222" },  // normal
++  { "#005577", "#eeeeee", "#005577" },  // selected
++  { "#222222", "#ee0000", "#222222" },  // red
++  { "#222222", "#eeee00", "#222222" },  // yellow
++  { "#222222", "#00ee00", "#222222" },  // green
++ // add more here
++  { NULL },
++};
++
+ /* tagging */
+ static const char *tags[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
+ 
+diff --git a/drw.c b/drw.c
+index eb3b3c3..f6bceff 100644
+--- a/drw.c
++++ b/drw.c
+@@ -69,6 +69,7 @@ drw_create(Display *dpy, int screen, Window root, unsigned int w, unsigned int h
+ 	drw->drawable = XCreatePixmap(dpy, root, w, h, DefaultDepth(dpy, screen));
+ 	drw->gc = XCreateGC(dpy, root, 0, NULL);
+ 	drw->fontcount = 0;
++	drw->numcolors = 0;
+ 	XSetLineAttributes(dpy, drw->gc, 1, LineSolid, CapButt, JoinMiter);
+ 	return drw;
+ }
+@@ -197,18 +198,18 @@ drw_clr_free(Clr *clr) {
+ }
+ 
+ void
+-drw_setscheme(Drw *drw, ClrScheme *scheme) {
+-	if(drw && scheme)
+-		drw->scheme = scheme;
++drw_setscheme(Drw *drw, int scheme) {
++	if(drw && scheme >= 0 && scheme <= drw->numcolors)
++		drw->scheme = &drw->schemes[scheme];
+ }
+ 
+ void
+-drw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled, int empty, int invert) {
++drw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled, int empty) {
+ 	int dx;
+ 
+ 	if(!drw || !drw->fontcount || !drw->scheme)
+ 		return;
+-	XSetForeground(drw->dpy, drw->gc, invert ? drw->scheme->bg->pix : drw->scheme->fg->pix);
++	XSetForeground(drw->dpy, drw->gc, drw->scheme->fg->pix);
+ 	dx = (drw->fonts[0]->ascent + drw->fonts[0]->descent + 2) / 4;
+ 	if(filled)
+ 		XFillRectangle(drw->dpy, drw->drawable, drw->gc, x+1, y+1, dx+1, dx+1);
+@@ -242,7 +243,7 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, const char *tex
+ 	if (!drw || !drw->scheme) {
+ 		return 0;
+ 	} else if (render) {
+-		XSetForeground(drw->dpy, drw->gc, invert ? drw->scheme->fg->pix : drw->scheme->bg->pix);
++		XSetForeground(drw->dpy, drw->gc, drw->scheme->bg->pix);
+ 		XFillRectangle(drw->dpy, drw->drawable, drw->gc, x, y, w, h);
+ 	}
+ 
+@@ -256,10 +257,14 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, const char *tex
+ 
+ 	curfont = drw->fonts[0];
+ 	while (1) {
++		if (1 <= *text && *text <= drw->numcolors) {
++			drw_setscheme(drw, *text - 1);
++			text++;
++		}
+ 		utf8strlen = 0;
+ 		utf8str = text;
+ 		nextfont = NULL;
+-		while (*text) {
++		while (*text && (*text < 0 || *text > drw->numcolors)) {
+ 			utf8charlen = utf8decode(text, &utf8codepoint, UTF_SIZ);
+ 			for (i = 0; i < drw->fontcount; i++) {
+ 				charexists = charexists || XftCharExists(drw->dpy, drw->fonts[i]->xfont, utf8codepoint);
+@@ -297,7 +302,7 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, const char *tex
+ 					th = curfont->ascent + curfont->descent;
+ 					ty = y + (h / 2) - (th / 2) + curfont->ascent;
+ 					tx = x + (h / 2);
+-					XftDrawStringUtf8(d, invert ? &drw->scheme->bg->rgb : &drw->scheme->fg->rgb, curfont->xfont, tx, ty, (XftChar8 *)buf, len);
++					XftDrawStringUtf8(d, &drw->scheme->fg->rgb, curfont->xfont, tx, ty, (XftChar8 *)buf, len);
+ 				}
+ 
+ 				x += tex.w;
+diff --git a/drw.h b/drw.h
+index 536171b..fb83592 100644
+--- a/drw.h
++++ b/drw.h
+@@ -33,6 +33,8 @@ typedef struct {
+ 	Drawable drawable;
+ 	GC gc;
+ 	ClrScheme *scheme;
++	ClrScheme *schemes;
++	int numcolors;
+ 	size_t fontcount;
+ 	Fnt *fonts[DRW_FONT_CACHE_SIZE];
+ } Drw;
+@@ -64,10 +66,10 @@ void drw_cur_free(Drw *drw, Cur *cursor);
+ 
+ /* Drawing context manipulation */
+ void drw_setfont(Drw *drw, Fnt *font);
+-void drw_setscheme(Drw *drw, ClrScheme *scheme);
++void drw_setscheme(Drw *drw, int scheme);
+ 
+ /* Drawing functions */
+-void drw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled, int empty, int invert);
++void drw_rect(Drw *drw, int x, int y, unsigned int w, unsigned int h, int filled, int empty);
+ int drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, const char *text, int invert);
+ 
+ /* Map functions */
+diff --git a/dwm.c b/dwm.c
+index 169adcb..3c02a66 100644
+--- a/dwm.c
++++ b/dwm.c
+@@ -51,6 +51,7 @@
+                                * MAX(0, MIN((y)+(h),(m)->wy+(m)->wh) - MAX((y),(m)->wy)))
+ #define ISVISIBLE(C)            ((C->tags & C->mon->tagset[C->mon->seltags]))
+ #define LENGTH(X)               (sizeof X / sizeof X[0])
++#define MAXCOLORS               9
+ #define MOUSEMASK               (BUTTONMASK|PointerMotionMask)
+ #define WIDTH(X)                ((X)->w + 2 * (X)->bw)
+ #define HEIGHT(X)               ((X)->h + 2 * (X)->bw)
+@@ -261,7 +262,7 @@ static void (*handler[LASTEvent]) (XEvent *) = {
+ static Atom wmatom[WMLast], netatom[NetLast];
+ static Bool running = True;
+ static Cur *cursor[CurLast];
+-static ClrScheme scheme[SchemeLast];
++static ClrScheme scheme[MAXCOLORS];
+ static Display *dpy;
+ static Drw *drw;
+ static Monitor *mons, *selmon;
+@@ -703,14 +704,14 @@ drawbar(Monitor *m) {
+ 	x = 0;
+ 	for(i = 0; i < LENGTH(tags); i++) {
+ 		w = TEXTW(tags[i]);
+-		drw_setscheme(drw, m->tagset[m->seltags] & 1 << i ? &scheme[SchemeSel] : &scheme[SchemeNorm]);
+-		drw_text(drw, x, 0, w, bh, tags[i], urg & 1 << i);
++		drw_setscheme(drw, (m->tagset[m->seltags] & 1 << i) ? 1 : (urg & 1 << i ? 2:0));
++		drw_text(drw, x, 0, w, bh, tags[i], 1);
+ 		drw_rect(drw, x, 0, w, bh, m == selmon && selmon->sel && selmon->sel->tags & 1 << i,
+-		           occ & 1 << i, urg & 1 << i);
++		           occ & 1 << i);
+ 		x += w;
+ 	}
+ 	w = blw = TEXTW(m->ltsymbol);
+-	drw_setscheme(drw, &scheme[SchemeNorm]);
++	drw_setscheme(drw, 0);
+ 	drw_text(drw, x, 0, w, bh, m->ltsymbol, 0);
+ 	x += w;
+ 	xx = x;
+@@ -728,12 +729,12 @@ drawbar(Monitor *m) {
+ 	if((w = x - xx) > bh) {
+ 		x = xx;
+ 		if(m->sel) {
+-			drw_setscheme(drw, m == selmon ? &scheme[SchemeSel] : &scheme[SchemeNorm]);
+-			drw_text(drw, x, 0, w, bh, m->sel->name, 0);
+-			drw_rect(drw, x, 0, w, bh, m->sel->isfixed, m->sel->isfloating, 0);
++			drw_setscheme(drw, m == selmon ? 1 : 0);
++			drw_text(drw, x, 0, w, bh, m->sel->name, 1);
++			drw_rect(drw, x, 0, w, bh, m->sel->isfixed, m->sel->isfloating);
+ 		}
+ 		else {
+-			drw_setscheme(drw, &scheme[SchemeNorm]);
++			drw_setscheme(drw, 0);
+ 			drw_text(drw, x, 0, w, bh, NULL, 0);
+ 		}
+ 	}
+@@ -791,7 +792,7 @@ focus(Client *c) {
+ 		detachstack(c);
+ 		attachstack(c);
+ 		grabbuttons(c, True);
+-		XSetWindowBorder(dpy, c->win, scheme[SchemeSel].border->pix);
++		XSetWindowBorder(dpy, c->win, scheme[1].border->pix);
+ 		setfocus(c);
+ 	}
+ 	else {
+@@ -1039,7 +1040,7 @@ manage(Window w, XWindowAttributes *wa) {
+ 
+ 	wc.border_width = c->bw;
+ 	XConfigureWindow(dpy, w, CWBorderWidth, &wc);
+-	XSetWindowBorder(dpy, w, scheme[SchemeNorm].border->pix);
++	XSetWindowBorder(dpy, w, scheme[0].border->pix);
+ 	configure(c); /* propagates border_width, if size doesn't change */
+ 	updatewindowtype(c);
+ 	updatesizehints(c);
+@@ -1531,12 +1532,14 @@ setup(void) {
+ 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
+ 	cursor[CurMove] = drw_cur_create(drw, XC_fleur);
+ 	/* init appearance */
+-	scheme[SchemeNorm].border = drw_clr_create(drw, normbordercolor);
+-	scheme[SchemeNorm].bg = drw_clr_create(drw, normbgcolor);
+-	scheme[SchemeNorm].fg = drw_clr_create(drw, normfgcolor);
+-	scheme[SchemeSel].border = drw_clr_create(drw, selbordercolor);
+-	scheme[SchemeSel].bg = drw_clr_create(drw, selbgcolor);
+-	scheme[SchemeSel].fg = drw_clr_create(drw, selfgcolor);
++	for(int i = 0; i < MAXCOLORS && colors[i][0]; i++){
++		scheme[i].border = drw_clr_create(drw, colors[i][0]);
++		scheme[i].fg = drw_clr_create(drw, colors[i][1]);
++		scheme[i].bg = drw_clr_create(drw, colors[i][2]);
++		drw->numcolors++;
++	}
++	drw->schemes = scheme;
++
+ 	/* init bars */
+ 	updatebars();
+ 	updatestatus();
+-- 
+2.6.1
+
